@@ -5,10 +5,10 @@ from pathlib import Path
 import torch
 
 
-MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
-sys.path.insert(0, str(MODEL_DIR))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-from count_distributions import negative_binomial_from_mean_dispersion
+from sclamp_sr.distributions import negative_binomial_from_mean_dispersion
 
 
 class NegativeBinomialParameterizationTest(unittest.TestCase):
@@ -42,9 +42,10 @@ class NegativeBinomialParameterizationTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(dispersion.grad).all())
 
     def test_model_modules_use_only_the_shared_constructor(self):
+        package = ROOT / "sclamp_sr"
         offenders = []
-        for path in MODEL_DIR.glob("*.py"):
-            if path.name == "count_distributions.py":
+        for path in package.glob("*.py"):
+            if path.name == "distributions.py":
                 continue
             if "NegativeBinomial(" in path.read_text(encoding="utf-8"):
                 offenders.append(path.name)

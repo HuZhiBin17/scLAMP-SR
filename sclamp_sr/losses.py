@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-import scAPI_shared_feature_lambda_continuous_prior_gentle_zi as gentle_zi
+from . import zi_decoder as gentle_zi
 
 
 BASE_ANALYZE_RNA_FEATURE_WEIGHTS = gentle_zi.analyze_rna_feature_weights

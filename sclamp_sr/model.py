@@ -20,14 +20,14 @@ from tqdm.auto import tqdm
 sc = None
 epi = None
 
-import scAPI_shared_feature_lambda_continuous_prior_gentle_zi as gentle_zi
-from scAPI_shared import MultiModalDataset
-from scAPI_shared_feature_lambda_continuous_prior_gentle_zi_cell_residual import (
+from . import zi_decoder as gentle_zi
+from .encoder import MultiModalDataset
+from .losses import (
     BASE_ANALYZE_RNA_FEATURE_WEIGHTS,
     log_weight_for_likelihood,
     true_mixture_loss_function as base_true_mixture_loss_function,
 )
-from utils import setup_seed
+from .utils import setup_seed
 
 
 PROTOTYPE_COUNT = 12

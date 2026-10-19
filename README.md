@@ -58,7 +58,7 @@ Human Cortex analyses in the paper used the 14,336 nuclei labelled cortical plat
 Paper settings: 200 epochs, 50 warmup epochs, latent dimension 32, batch size 64, prototype/pseudo-state count 12, auxiliary state CE weight 0.02 from epoch 100 with a 30-epoch ramp, soft-target max probability 0.90.
 
 ```bash
-python models/scAPI_shared_feature_lambda_continuous_prior_gentle_zi_state_contrast_residual.py \
+python scLAMP_SR.py \
   --seed 0 \
   --output_dir results/PBMC \
   --run_dir_name seed_0 \
@@ -152,13 +152,14 @@ python -m unittest tests.test_count_distributions
 ## Repository layout
 
 ```text
-models/         scLAMP-SR model and the modules it imports
+scLAMP_SR.py    training entry point
+sclamp_sr/      importable model package
 experiments/    held-out likelihood ablation and frozen-latent calibration
 scripts/        preprocessing, evaluation, and baseline wrappers
 tests/          negative-binomial parameterization checks
 ```
 
-The paper model is `models/scAPI_shared_feature_lambda_continuous_prior_gentle_zi_state_contrast_residual.py`. The other `scAPI_shared*.py` files in `models/` are not unused predecessors. That training script subclasses the ZINB/ZIP mixture decoder in `scAPI_shared_feature_lambda_continuous_prior_gentle_zi.py`, uses `MultiModalDataset` and the shared encoder from `scAPI_shared.py`, and takes the mixture-loss helpers from `scAPI_shared_feature_lambda_continuous_prior_gentle_zi_cell_residual.py`. `count_distributions.py` and `utils.py` provide the shared negative-binomial constructor and seeding utilities. Keep this import chain when running or editing the model.
+`scLAMP_SR.py` trains the paper model in `sclamp_sr/model.py`. That module subclasses the ZINB/ZIP decoder in `sclamp_sr/zi_decoder.py`, uses the encoder and paired dataset in `sclamp_sr/encoder.py`, and the mixture-loss helpers in `sclamp_sr/losses.py`. `sclamp_sr/distributions.py` and `sclamp_sr/utils.py` provide the shared negative-binomial constructor and seeding utilities.
 
 ## Citation
 

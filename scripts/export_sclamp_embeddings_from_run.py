@@ -13,11 +13,7 @@ def parse_args():
     parser.add_argument("--run-dir", required=True)
     parser.add_argument(
         "--model-script",
-        default=(
-            "models/"
-            "scAPI_shared_feature_lambda_continuous_prior_gentle_zi_"
-            "state_contrast_residual.py"
-        ),
+        default="scLAMP_SR.py",
     )
     parser.add_argument("--checkpoint-path")
     return parser.parse_args()

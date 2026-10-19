@@ -8,17 +8,63 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import scipy
 import torch
 import torch.nn as nn
 from torch.distributions import Poisson
 
-import episcanpy.api as epi
+# Scanpy/episcanpy are needed only when this legacy standalone CLI performs
+# preprocessing.  Avoid paying their import cost for model-only consumers.
+sc = None
+epi = None
 
-from scAPI_shared import MultiModalDataset, compute_kld, compute_mmd, encoder
-from utils import AdversarialAlignmentModule, setup_seed
-from count_distributions import negative_binomial_from_mean_dispersion
+from .encoder import MultiModalDataset, compute_kld, compute_mmd, encoder
+from .utils import AdversarialAlignmentModule, setup_seed
+from .distributions import (
+    NEGATIVE_BINOMIAL_PARAMETERIZATION,
+    negative_binomial_from_mean_dispersion,
+)
+
+
+def make_decoder_head(latent_dim, hidden_dim, output_dim, dropout_rate, final_activation="softplus"):
+    layers = [
+        nn.Linear(latent_dim, hidden_dim // 2),
+        nn.BatchNorm1d(hidden_dim // 2),
+        nn.ReLU(),
+        nn.Dropout(dropout_rate),
+        nn.Linear(hidden_dim // 2, hidden_dim),
+        nn.BatchNorm1d(hidden_dim),
+        nn.ReLU(),
+        nn.Dropout(dropout_rate),
+        nn.Linear(hidden_dim, output_dim),
+    ]
+    if final_activation == "softplus":
+        layers.append(nn.Softplus())
+    elif final_activation != "identity":
+        raise ValueError(f"Unsupported final activation: {final_activation}")
+    return nn.Sequential(*layers)
+
+
+def zero_inflated_log_prob(base_dist, value, zi_logits):
+    zi_prob = torch.sigmoid(zi_logits)
+    zi_prob = torch.clamp(zi_prob, min=1e-6, max=1 - 1e-6)
+    log_zi = torch.log(zi_prob)
+    log_one_minus_zi = torch.log1p(-zi_prob)
+    zero_value = torch.zeros_like(value)
+    base_zero_logprob = base_dist.log_prob(zero_value)
+    zero_logprob = torch.logsumexp(
+        torch.stack([log_zi, log_one_minus_zi + base_zero_logprob], dim=0),
+        dim=0,
+    )
+    nonzero_logprob = log_one_minus_zi + base_dist.log_prob(value)
+    return torch.where(value == 0, zero_logprob, nonzero_logprob)
+
+
+def sample_zero_inflated(base_dist, zi_logits):
+    base_sample = base_dist.sample()
+    zi_prob = torch.sigmoid(zi_logits)
+    zero_mask = torch.rand_like(base_sample.float()) < zi_prob
+    return torch.where(zero_mask, torch.zeros_like(base_sample), base_sample)
 
 
 class FeatureWiseMixtureDecoder(nn.Module):
@@ -33,84 +79,19 @@ class FeatureWiseMixtureDecoder(nn.Module):
         dropout_rate=0.2,
     ):
         super().__init__()
+        self.latent_dim = latent_dim
 
-        self.rna_decoder_mean = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, rna_dim),
-            nn.Softplus(),
-        )
+        self.rna_decoder_mean = make_decoder_head(latent_dim, hidden_dim, rna_dim, dropout_rate, final_activation="softplus")
+        self.rna_decoder_dispersion = make_decoder_head(latent_dim, hidden_dim, rna_dim, dropout_rate, final_activation="softplus")
+        self.rna_decoder_poisson = make_decoder_head(latent_dim, hidden_dim, rna_dim, dropout_rate, final_activation="softplus")
+        self.rna_decoder_nb_zero_logits = make_decoder_head(latent_dim, hidden_dim, rna_dim, dropout_rate, final_activation="identity")
+        self.rna_decoder_ps_zero_logits = make_decoder_head(latent_dim, hidden_dim, rna_dim, dropout_rate, final_activation="identity")
 
-        self.rna_decoder_dispersion = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, rna_dim),
-            nn.Softplus(),
-        )
-
-        self.rna_decoder_poisson = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, rna_dim),
-            nn.Softplus(),
-        )
-
-        self.atac_decoder_mean = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, atac_dim),
-            nn.Softplus(),
-        )
-
-        self.atac_decoder_dispersion = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, atac_dim),
-            nn.Softplus(),
-        )
-
-        self.atac_decoder_poisson = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, atac_dim),
-            nn.Softplus(),
-        )
+        self.atac_decoder_mean = make_decoder_head(latent_dim, hidden_dim, atac_dim, dropout_rate, final_activation="softplus")
+        self.atac_decoder_dispersion = make_decoder_head(latent_dim, hidden_dim, atac_dim, dropout_rate, final_activation="softplus")
+        self.atac_decoder_poisson = make_decoder_head(latent_dim, hidden_dim, atac_dim, dropout_rate, final_activation="softplus")
+        self.atac_decoder_nb_zero_logits = make_decoder_head(latent_dim, hidden_dim, atac_dim, dropout_rate, final_activation="identity")
+        self.atac_decoder_ps_zero_logits = make_decoder_head(latent_dim, hidden_dim, atac_dim, dropout_rate, final_activation="identity")
 
         # RNA mixture prior is a continuous function of gene-level summary statistics.
         # We standardize the inputs so the learned coefficients remain interpretable and stable.
@@ -163,10 +144,14 @@ class FeatureWiseMixtureDecoder(nn.Module):
         rna_mean = self.rna_decoder_mean(z) + 1e-6
         rna_dispersion = self.rna_decoder_dispersion(z) + 1e-6
         rna_poisson = self.rna_decoder_poisson(z) + 1e-6
+        rna_nb_zero_logits = self.rna_decoder_nb_zero_logits(z)
+        rna_ps_zero_logits = self.rna_decoder_ps_zero_logits(z)
 
         atac_mean = self.atac_decoder_mean(z) + 1e-6
         atac_dispersion = self.atac_decoder_dispersion(z) + 1e-6
         atac_poisson = self.atac_decoder_poisson(z) + 1e-6
+        atac_nb_zero_logits = self.atac_decoder_nb_zero_logits(z)
+        atac_ps_zero_logits = self.atac_decoder_ps_zero_logits(z)
 
         rna_weights = torch.softmax(self.get_rna_logits(), dim=0)
         atac_weights = torch.softmax(self.atac_logits, dim=0)
@@ -180,8 +165,8 @@ class FeatureWiseMixtureDecoder(nn.Module):
         atac_ps_dist = Poisson(rate=atac_poisson)
 
         if sample:
-            rna_data = rna_lambda_1 * rna_nb_dist.sample() + rna_lambda_2 * rna_ps_dist.sample()
-            atac_data = atac_lambda_1 * atac_nb_dist.sample() + atac_lambda_2 * atac_ps_dist.sample()
+            rna_data = rna_lambda_1 * sample_zero_inflated(rna_nb_dist, rna_nb_zero_logits) + rna_lambda_2 * sample_zero_inflated(rna_ps_dist, rna_ps_zero_logits)
+            atac_data = atac_lambda_1 * sample_zero_inflated(atac_nb_dist, atac_nb_zero_logits) + atac_lambda_2 * sample_zero_inflated(atac_ps_dist, atac_ps_zero_logits)
         else:
             rna_data = rna_mean
             atac_data = atac_mean
@@ -192,15 +177,23 @@ class FeatureWiseMixtureDecoder(nn.Module):
             "rna_poisson": rna_poisson,
             "rna_nb_dist": rna_nb_dist,
             "rna_ps_dist": rna_ps_dist,
+            "rna_nb_zero_logits": rna_nb_zero_logits,
+            "rna_ps_zero_logits": rna_ps_zero_logits,
             "atac_mean": atac_mean,
             "atac_dispersion": atac_dispersion,
             "atac_bnl": atac_poisson,
             "atac_nb_dist": atac_nb_dist,
             "atac_bnl_dist": atac_ps_dist,
+            "atac_nb_zero_logits": atac_nb_zero_logits,
+            "atac_ps_zero_logits": atac_ps_zero_logits,
             "rna_lambda_1": rna_lambda_1,
             "rna_lambda_2": rna_lambda_2,
             "atac_lambda_1": atac_lambda_1,
             "atac_lambda_2": atac_lambda_2,
+            "rna_nb_zero_rate": torch.sigmoid(rna_nb_zero_logits),
+            "rna_ps_zero_rate": torch.sigmoid(rna_ps_zero_logits),
+            "atac_nb_zero_rate": torch.sigmoid(atac_nb_zero_logits),
+            "atac_ps_zero_rate": torch.sigmoid(atac_ps_zero_logits),
             "mixture_prior_reg": self.prior_regularization(),
             "rna_prior_nb_weight": self.get_rna_prior_nb_weight(),
             "rna_prior_strength": self.rna_prior_strength,
@@ -290,10 +283,10 @@ def true_mixture_loss_function(
     rna_data = rna_data.round().long()
     atac_data = atac_data.round().long()
 
-    rna_nb_logprob = dist_params["rna_nb_dist"].log_prob(rna_data)
-    rna_ps_logprob = dist_params["rna_ps_dist"].log_prob(rna_data)
-    atac_nb_logprob = dist_params["atac_nb_dist"].log_prob(atac_data)
-    atac_ps_logprob = dist_params["atac_bnl_dist"].log_prob(atac_data)
+    rna_nb_logprob = zero_inflated_log_prob(dist_params["rna_nb_dist"], rna_data, dist_params["rna_nb_zero_logits"])
+    rna_ps_logprob = zero_inflated_log_prob(dist_params["rna_ps_dist"], rna_data, dist_params["rna_ps_zero_logits"])
+    atac_nb_logprob = zero_inflated_log_prob(dist_params["atac_nb_dist"], atac_data, dist_params["atac_nb_zero_logits"])
+    atac_ps_logprob = zero_inflated_log_prob(dist_params["atac_bnl_dist"], atac_data, dist_params["atac_ps_zero_logits"])
 
     rna_log_lambda_1 = torch.log(dist_params["rna_lambda_1"].unsqueeze(0) + 1e-8)
     rna_log_lambda_2 = torch.log(dist_params["rna_lambda_2"].unsqueeze(0) + 1e-8)
@@ -525,6 +518,18 @@ def analyze_rna_feature_weights(model, rna_adata, output_dir):
         summary["high_expression_mean_prior_nb_weight"] = float(df.loc[df["expression_group"] == "high", "rna_prior_nb_weight"].mean())
         summary["low_expression_mean_prior_strength"] = float(df.loc[df["expression_group"] == "low", "rna_prior_strength"].mean())
         summary["high_expression_mean_prior_strength"] = float(df.loc[df["expression_group"] == "high", "rna_prior_strength"].mean())
+    if hasattr(model.decoder, "rna_decoder_nb_zero_logits"):
+        decoder_was_training = model.decoder.training
+        model.decoder.eval()
+        with torch.no_grad():
+            outputs = model.decoder(
+                torch.zeros(1, model.decoder.latent_dim, device=next(model.parameters()).device),
+                sample=False,
+            )[2]
+        if decoder_was_training:
+            model.decoder.train()
+        summary["rna_nb_zero_rate_mean"] = float(outputs["rna_nb_zero_rate"].detach().cpu().mean())
+        summary["rna_ps_zero_rate_mean"] = float(outputs["rna_ps_zero_rate"].detach().cpu().mean())
     if hasattr(model.decoder, "rna_prior_bias"):
         summary["prior_bias"] = float(model.decoder.rna_prior_bias.detach().cpu().item())
         summary["prior_log_mean_coef"] = float(model.decoder.rna_prior_feature_weights.detach().cpu()[0, 0].item())
@@ -546,12 +551,12 @@ def analyze_rna_feature_weights(model, rna_adata, output_dir):
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     axes[0].hist(df["rna_nb_weight"], bins=50, color="#1f77b4", alpha=0.85)
-    axes[0].set_title("RNA NB Weight Distribution")
-    axes[0].set_xlabel("NB weight")
+    axes[0].set_title("RNA ZINB Weight Distribution")
+    axes[0].set_xlabel("ZINB weight")
     axes[0].set_ylabel("Gene count")
     axes[1].hist(df["rna_ps_weight"], bins=50, color="#ff7f0e", alpha=0.85)
-    axes[1].set_title("RNA Poisson Weight Distribution")
-    axes[1].set_xlabel("Poisson weight")
+    axes[1].set_title("RNA ZIP Weight Distribution")
+    axes[1].set_xlabel("ZIP weight")
     axes[1].set_ylabel("Gene count")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "RNA权重直方图.png"), dpi=200)
@@ -559,7 +564,7 @@ def analyze_rna_feature_weights(model, rna_adata, output_dir):
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.scatter(df["log10_mean_expression"], df["rna_nb_weight"], s=8, alpha=0.25, color="#1f77b4")
-    ax.set_title("RNA NB Weight vs Mean Gene Expression")
+    ax.set_title("RNA ZINB Weight vs Mean Gene Expression")
     ax.set_xlabel("log10(mean raw expression + 1e-8)")
     ax.set_ylabel("NB weight")
     ax.text(
@@ -583,8 +588,8 @@ def analyze_rna_feature_weights(model, rna_adata, output_dir):
         df.loc[df["expression_group"] == "high", "rna_nb_weight"].values,
     ]
     ax.boxplot(box_data, labels=["Low expr", "Mid expr", "High expr"], showfliers=False)
-    ax.set_title("RNA NB Weights by Expression Group")
-    ax.set_ylabel("NB weight")
+    ax.set_title("RNA ZINB Weights by Expression Group")
+    ax.set_ylabel("ZINB weight")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "RNA_NB权重_按表达分组.png"), dpi=200)
     plt.close(fig)
@@ -594,10 +599,10 @@ def analyze_rna_feature_weights(model, rna_adata, output_dir):
     fig, axes = plt.subplots(1, 2, figsize=(14, 8))
     axes[0].barh(top_high["gene"], top_high["rna_nb_weight"], color="#2ca02c")
     axes[0].set_title("Top 20 High-Expression Genes")
-    axes[0].set_xlabel("NB weight")
+    axes[0].set_xlabel("ZINB weight")
     axes[1].barh(top_low["gene"], top_low["rna_nb_weight"], color="#d62728")
     axes[1].set_title("Top 20 Low-Expression Genes")
-    axes[1].set_xlabel("NB weight")
+    axes[1].set_xlabel("ZINB weight")
     fig.tight_layout()
     fig.savefig(os.path.join(output_dir, "RNA_NB权重_高低表达高排名基因.png"), dpi=200)
     plt.close(fig)
@@ -611,7 +616,7 @@ def analyze_rna_feature_weights(model, rna_adata, output_dir):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Feature-wise lambda variant with a gentler continuous RNA prior from log-mean expression and zero rate")
+    parser = argparse.ArgumentParser(description="Feature-wise lambda variant with a gentler continuous RNA prior and ZINB/ZIP components")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument(
@@ -624,9 +629,137 @@ def parse_args():
         type=str,
         default="/data/hzb/dataset/10XMultiomics_pbmc_10k_granulocyte_plus_1_atac.h5ad",
     )
+    parser.add_argument(
+        "--modality2_h5ad",
+        type=str,
+        default=None,
+        help="Optional generic second-modality input; overrides --atac_h5ad.",
+    )
+    parser.add_argument(
+        "--modality2_name",
+        type=str,
+        default="ATAC",
+        help="Display name for the second modality, for example ATAC or ADT.",
+    )
+    parser.add_argument(
+        "--modality2_input_transform",
+        choices=["auto", "raw", "tfidf", "log1p", "clr"],
+        default="auto",
+        help=(
+            "Encoder transform for the second modality. 'auto' reuses "
+            "--atac_input_transform for backward compatibility."
+        ),
+    )
+    parser.add_argument(
+        "--run_dir_name",
+        type=str,
+        default=None,
+        help="Optional result subdirectory name; defaults to a Chinese seed name.",
+    )
     parser.add_argument("--output_dir", type=str, default="feature_lambda_runs/pbmc_10k")
     parser.add_argument("--num_epochs", type=int, default=80)
     parser.add_argument("--warmup_epochs", type=int, default=20)
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=30,
+        help="Epochs without improvement before stopping; set to 0 to disable.",
+    )
+    parser.add_argument(
+        "--checkpoint_epochs",
+        type=str,
+        default="",
+        help="Comma-separated 1-based epochs at which to save model checkpoints.",
+    )
+    parser.add_argument(
+        "--atac_input_transform",
+        choices=["raw", "tfidf"],
+        default="raw",
+        help="ATAC encoder input after feature filtering. Raw counts remain the decoder target.",
+    )
+    parser.add_argument(
+        "--training_data_backend",
+        choices=["legacy", "tensor"],
+        default="legacy",
+        help="Use prebuilt CPU tensors or legacy per-sample NumPy-to-tensor conversion.",
+    )
+    parser.add_argument(
+        "--materialize_decoder_samples",
+        action="store_true",
+        help="Generate decoder samples even though the training loss does not consume them.",
+    )
+    parser.add_argument(
+        "--residual_p95_interval",
+        type=int,
+        default=1,
+        help="Compute the expensive residual p95 diagnostic every N batches; 0 disables it.",
+    )
+    pin_memory_group = parser.add_mutually_exclusive_group()
+    pin_memory_group.add_argument(
+        "--pin_memory",
+        dest="pin_memory",
+        action="store_true",
+        help="Pin DataLoader batches when CUDA is used.",
+    )
+    pin_memory_group.add_argument(
+        "--no_pin_memory",
+        dest="pin_memory",
+        action="store_false",
+        help="Disable pinned DataLoader batches.",
+    )
+    parser.set_defaults(pin_memory=False)
+    parser.add_argument(
+        "--max_batches_per_epoch",
+        type=int,
+        default=0,
+        help="Limit batches per epoch for profiling; 0 uses the full dataset.",
+    )
+    parser.add_argument(
+        "--skip_post_training_analysis",
+        action="store_true",
+        help="Skip checkpoint analysis for short profiling runs.",
+    )
+    parser.add_argument(
+        "--skip_checkpoint_save",
+        action="store_true",
+        help="Do not save a model checkpoint for disposable profiling runs.",
+    )
+    parser.add_argument("--latent_state_ce_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--latent_state_label_smoothing",
+        type=float,
+        default=0.0,
+        help="Label smoothing for latent pseudo-state cross-entropy.",
+    )
+    parser.add_argument(
+        "--latent_state_soft_target_max_prob",
+        type=float,
+        default=1.0,
+        help=(
+            "Target mean maximum probability for distance-aware KMeans soft "
+            "targets; 1.0 retains hard pseudo-state labels."
+        ),
+    )
+    parser.add_argument(
+        "--latent_state_ramp_epochs",
+        type=int,
+        default=0,
+        help="Linearly ramp latent pseudo-state CE weight over this many epochs.",
+    )
+    parser.add_argument("--latent_state_supcon_weight", type=float, default=0.0)
+    parser.add_argument("--latent_state_temperature", type=float, default=0.20)
+    parser.add_argument(
+        "--latent_state_start_epoch",
+        type=int,
+        default=0,
+        help="Zero-based epoch at which latent pseudo-state cross-entropy becomes active.",
+    )
+    parser.add_argument(
+        "--latent_state_supcon_start_epoch",
+        type=int,
+        default=-1,
+        help="Zero-based epoch for pseudo-state contrastive loss; negative reuses latent_state_start_epoch.",
+    )
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--n_top_genes", type=int, default=3000)
     parser.add_argument("--hidden_dim", type=int, default=512)
@@ -636,12 +769,60 @@ def parse_args():
     parser.add_argument("--main_lr", type=float, default=1e-3)
     parser.add_argument("--prior_lr", type=float, default=5e-5)
     parser.add_argument("--gene_residual_lr", type=float, default=5e-4)
+    parser.add_argument("--init_model_path", type=str, default=None)
+    parser.add_argument("--cell_residual_rank", type=int, default=8)
+    parser.add_argument("--cell_residual_scale", type=float, default=0.35)
+    parser.add_argument("--cell_residual_penalty", type=float, default=0.50)
+    parser.add_argument("--prototype_count", type=int, default=12)
+    parser.add_argument("--prototype_scale", type=float, default=0.45)
+    parser.add_argument("--prototype_penalty", type=float, default=0.30)
+    parser.add_argument("--prototype_entropy_weight", type=float, default=0.005)
+    parser.add_argument("--prototype_temperature", type=float, default=0.70)
+    parser.add_argument("--prototype_balance_weight", type=float, default=0.05)
+    parser.add_argument(
+        "--modality2_prototype_scale",
+        type=float,
+        default=0.0,
+        help="Maximum state residual applied to second-modality mixture logits.",
+    )
+    parser.add_argument("--modality2_prototype_penalty", type=float, default=0.08)
+    parser.add_argument(
+        "--rna_state_mean_scale",
+        type=float,
+        default=0.0,
+        help="Maximum log-scale state residual applied to both RNA component means.",
+    )
+    parser.add_argument("--rna_state_mean_penalty", type=float, default=0.08)
+    parser.add_argument(
+        "--auxiliary_state_gate_gradient",
+        action="store_true",
+        help="Allow second-modality and RNA-mean residuals to update the state gate.",
+    )
+    parser.add_argument(
+        "--state_head_source",
+        choices=("classifier", "prototype"),
+        default="classifier",
+        help="Head used by pseudo-state cross-entropy.",
+    )
+    parser.add_argument(
+        "--state_gate_input",
+        choices=("decoder", "shared_mean"),
+        default="decoder",
+        help="Latent input used by prototype-gated state residuals.",
+    )
+    parser.add_argument("--state_contrast_clusters", type=int, default=12)
+    parser.add_argument("--state_contrast_top_genes", type=int, default=1024)
+    parser.add_argument("--state_contrast_weight", type=float, default=0.02)
+    parser.add_argument("--state_contrast_margin", type=float, default=0.03)
     parser.add_argument("--analyze_only", action="store_true")
     parser.add_argument("--model_path", type=str, default=None)
     return parser.parse_args()
 
 
 def main(args):
+    global sc, epi
+    import scanpy as sc
+    import episcanpy.api as epi
     setup_seed(args.seed)
     run_output_dir = os.path.join(args.output_dir, f"seed_{args.seed}")
     os.makedirs(run_output_dir, exist_ok=True)
@@ -697,6 +878,13 @@ def main(args):
 
     print(f"Using device: {args.device}")
     model.to(args.device)
+
+    if args.init_model_path and not args.analyze_only:
+        print(f"Warm-starting from checkpoint: {args.init_model_path}")
+        state_dict = torch.load(args.init_model_path, map_location=args.device)
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        print(f"  missing_keys: {list(incompatible.missing_keys)}")
+        print(f"  unexpected_keys: {list(incompatible.unexpected_keys)}")
 
     if args.analyze_only:
         model_path = args.model_path or os.path.join(

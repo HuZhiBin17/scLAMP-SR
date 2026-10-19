@@ -19,13 +19,12 @@ from torch.utils.data import DataLoader, Dataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_DIR = ROOT / "models"
 EXPERIMENT_DIR = ROOT / "experiments"
-sys.path[:0] = [str(MODEL_DIR), str(EXPERIMENT_DIR), str(ROOT)]
+sys.path[:0] = [str(EXPERIMENT_DIR), str(ROOT)]
 
 import run_heldout_probability_ablation as heldout  # noqa: E402
-import scAPI_shared_feature_lambda_continuous_prior_gentle_zi_state_contrast_residual as state_sr  # noqa: E402
-from utils import setup_seed  # noqa: E402
+from sclamp_sr import model as state_sr  # noqa: E402
+from sclamp_sr.utils import setup_seed  # noqa: E402
 
 
 class LatentCountDataset(Dataset):

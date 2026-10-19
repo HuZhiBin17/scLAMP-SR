@@ -25,8 +25,7 @@ from tqdm.auto import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPERIMENT_DIR = ROOT / "experiments"
-MODEL_DIR = ROOT / "models"
-sys.path[:0] = [str(EXPERIMENT_DIR), str(MODEL_DIR), str(ROOT)]
+sys.path[:0] = [str(EXPERIMENT_DIR), str(ROOT)]
 
 import run_heldout_probability_ablation as heldout  # noqa: E402
 
