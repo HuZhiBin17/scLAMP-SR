@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: If you use scLAMP-SR, please cite the accompanying paper.
+title: "scLAMP-SR: state-resolved mixture decoding for paired single-cell multi-omics"
+authors:
+  - family-names: Hu
+    given-names: Zhibin
+    email: 34520241151650@stu.xmu.edu.cn
+  - family-names: Yang
+    given-names: Fan
+  - family-names: Zeng
+    given-names: Feng
+  - family-names: Huang
+    given-names: Shan
+  - family-names: Yang
+    given-names: Zhirong
+license: MIT
+repository-code: https://github.com/HuZhiBin17/scLAMP-SR

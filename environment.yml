@@ -1,0 +1,10 @@
+name: sclamp-sr
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip
+  - pip:
+      - -r requirements.txt
