@@ -7,8 +7,6 @@ scLAMP-SR trains modality-specific and shared latent variables, then alternates 
 **License:** MIT  
 **Contact:** 34520241151650@stu.xmu.edu.cn
 
-This repository contains training, preprocessing, evaluation, and baseline-wrapper code. It does **not** ship standardized `.h5ad` files, train/validation/test splits, model checkpoints, figure CSVs, or manuscript LaTeX.
-
 ## Installation
 
 ```bash
@@ -154,11 +152,13 @@ python -m unittest tests.test_count_distributions
 ## Repository layout
 
 ```text
-models/         scLAMP-SR model and the ZINB/ZIP decoder family
+models/         scLAMP-SR model and the modules it imports
 experiments/    held-out likelihood ablation and frozen-latent calibration
 scripts/        preprocessing, evaluation, and baseline wrappers
 tests/          negative-binomial parameterization checks
 ```
+
+The paper model is `models/scAPI_shared_feature_lambda_continuous_prior_gentle_zi_state_contrast_residual.py`. The other `scAPI_shared*.py` files in `models/` are not unused predecessors. That training script subclasses the ZINB/ZIP mixture decoder in `scAPI_shared_feature_lambda_continuous_prior_gentle_zi.py`, uses `MultiModalDataset` and the shared encoder from `scAPI_shared.py`, and takes the mixture-loss helpers from `scAPI_shared_feature_lambda_continuous_prior_gentle_zi_cell_residual.py`. `count_distributions.py` and `utils.py` provide the shared negative-binomial constructor and seeding utilities. Keep this import chain when running or editing the model.
 
 ## Citation
 
