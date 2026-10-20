@@ -1,0 +1,27 @@
+{
+  "title": "scLAMP-SR: state-resolved mixture decoding for paired single-cell multi-omics",
+  "upload_type": "software",
+  "license": "MIT",
+  "creators": [
+    {"name": "Hu, Zhibin", "affiliation": "Xiamen University"},
+    {"name": "Liu, Jiahao", "affiliation": "Xiamen University"},
+    {"name": "Zhou, Jianchi", "affiliation": "Xiamen University"},
+    {"name": "Yang, Fan", "affiliation": "Xiamen University"},
+    {"name": "Zeng, Feng", "affiliation": "Xiamen University"},
+    {"name": "Huang, Shan", "affiliation": "The Second Affiliated Hospital of Harbin Medical University"},
+    {"name": "Yang, Zhirong", "affiliation": "Norwegian University of Science and Technology; Jinhua Institute of Zhejiang University"}
+  ],
+  "keywords": [
+    "single-cell multi-omics",
+    "paired-cell integration",
+    "mixture decoder",
+    "cell states"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/HuZhiBin17/scLAMP-SR",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}

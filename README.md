@@ -165,4 +165,4 @@ tests/          negative-binomial parameterization checks
 
 ## Citation
 
-Hu Z, Yang F, Zeng F, Huang S, Yang Z. scLAMP-SR: state-resolved mixture decoding for paired single-cell multi-omics. https://doi.org/10.5281/zenodo.23472962
+Hu Z, Liu J, Zhou J, Yang F, Zeng F, Huang S, Yang Z. scLAMP-SR: state-resolved mixture decoding for paired single-cell multi-omics. https://doi.org/10.5281/zenodo.23472962
