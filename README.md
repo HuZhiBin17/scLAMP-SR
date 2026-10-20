@@ -4,7 +4,7 @@ State-resolved mixture decoding for paired single-cell multi-omics (RNA–ATAC a
 
 scLAMP-SR trains modality-specific and shared latent variables, then alternates those latents as inputs to the same mixture decoder. Component families can be chosen by omics layer; this repository implements the paper configuration with zero-inflated negative binomial (ZINB) and zero-inflated Poisson (ZIP) components and gene- and state-dependent mixture weights.
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23472962.svg)](https://doi.org/10.5281/zenodo.23472962)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23498645.svg)](https://doi.org/10.5281/zenodo.23498645)
 
 **License:** MIT  
 **Contact:** 34520241151650@stu.xmu.edu.cn
@@ -165,4 +165,4 @@ tests/          negative-binomial parameterization checks
 
 ## Citation
 
-Hu Z, Liu J, Zhou J, Yang F, Zeng F, Huang S, Yang Z. scLAMP-SR: state-resolved mixture decoding for paired single-cell multi-omics. https://doi.org/10.5281/zenodo.23472962
+Hu Z, Liu J, Zhou J, Yang F, Zeng F, Huang S, Yang Z. scLAMP-SR: state-resolved mixture decoding for paired single-cell multi-omics. https://doi.org/10.5281/zenodo.23498645
